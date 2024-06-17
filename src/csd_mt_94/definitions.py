@@ -46,29 +46,6 @@ STATUS_WORD = namedtuple(
     ],
 )
 
-# CONTROL_WORD = namedtuple(
-#     "ControlWord",
-#     [
-#         "user_specific_15",
-#         "user_specific_14",
-#         "user_specific_13",
-#         "user_specific_12",
-#         "user_specific_11",
-#         "reserved_10",
-#         "reserved_9",
-#         "halt",
-#         "fault_reset",
-#         "relative_cs",
-#         "change_set_immediately",
-#         "new_set_point",
-#         "enable_op",
-#         "quick_stop",
-#         "enable_voltage",
-#         "switch_on",
-#     ]
-# )
-
-
 @dataclass
 class CONTROL_WORD:
     user_specific_15: bool
