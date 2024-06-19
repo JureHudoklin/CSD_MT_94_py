@@ -2,6 +2,7 @@ from typing import Any, Dict, List, Tuple, Literal, Union
 import time
 
 from pymodbus.client import AsyncModbusTcpClient
+from pymodbus.client import ModbusTcpClient
 from pymodbus import (
     ExceptionResponse,
     Framer,
@@ -10,7 +11,7 @@ from pymodbus import (
 )
 import asyncio
 import logging
-from utils import merge_registers, to_bits_list, int32_to_uint16
+from .utils import merge_registers, to_bits_list, int32_to_uint16
 from .definitions import *
 
 logger = logging.getLogger(__name__)
@@ -24,17 +25,80 @@ class CSD_MT_94:
             host,
             port=port,
             framer=Framer.SOCKET,
-        )        
+        )
+        self.client_sync = ModbusTcpClient(
+            host,
+            port=port,
+            framer=Framer.SOCKET,
+        )    
         
     async def start_connection(self):
         await self.client.connect()
+        self.client_sync.connect()
         
     def __del__(self):
+        self.switch_off_sync()
         self.client.close()
+        self.client_sync.close()
     
     def is_connected(self) -> bool:
         """Check if the client is connected."""
         return self.client.is_active()
+   
+    async def move(self,
+                   position: int,
+                   cs: Literal["absolute", "relative"] = "relative",
+                   timeout: float = 10,
+                   change_setpoint_immediately: bool = False,
+        ):
+        """ Move to a specific position. The function will block until the target position is reached or the timeout is reached.
+
+        Parameters
+        ----------
+        position : int
+            The target position in [steps].
+        cs : Literal["absolute", "relative"]
+            The coordinate system in which the position is defined, by default "relative"
+        timeout : float, optional
+            The timeout in seconds, by default 10
+        change_setpoint_immediately : bool, optional
+            If True, the current setpoint can be overwritten by sending a new movement command, by default False
+        """
+        await self.set_control_word_bits({4: False, 5: change_setpoint_immediately, 6: cs == "relative"})
+        await self.set_target_position(position)
+        await self.set_control_word_bit(4, True)
+        
+        target_reached = False
+        timeout = time.time() + timeout
+        while not target_reached:
+            sw = await self.get_status_word()
+            target_reached = sw[1].target_reached
+            if time.time() > timeout:
+                return
+        
+    async def move_async(self,
+                         position: int,
+                         cs: Literal["absolute", "relative"] = "relative",
+                         change_setpoint_immediately: bool = True):
+        """ Move to a specific position asynchronously. The function will return immediately after the movement is started.
+
+        Parameters
+        ----------
+        position : int
+            The target position in [steps].
+        cs : Literal[&quot;absolute&quot;, &quot;relative&quot;], optional
+            The coordinate system in which the position is defined, by default "relative"
+        change_setpoint_immediately : bool, optional
+            If True, the current setpoint can be overwritten by sending a new movement command, by default True
+        """
+        await self.set_control_word_bits({4: False, 5: change_setpoint_immediately, 6: cs == "relative"})
+        await self.set_target_position(position)        
+        await self.set_control_word_bit(4, True)
+        
+        return
+   
+   
+   
     
     async def switch_on(self):
         """Switch on the drive."""
@@ -46,6 +110,12 @@ class CSD_MT_94:
         """Switch off the drive."""
         try:
             await self.set_control_word_bit(0, False)
+        except ModbusException as e:
+            logger.error(f"Error switching off drive: {e}")
+    def switch_off_sync(self):
+        """Switch off the drive."""
+        try:
+            self.client_sync.write_register(1040, 0)
         except ModbusException as e:
             logger.error(f"Error switching off drive: {e}")
             
@@ -86,73 +156,7 @@ class CSD_MT_94:
         try:
             await self.set_control_word_bit(3, False)
         except ModbusException as e:
-            logger.error(f"Error disabling operation: {e}")
-        
-    async def move(self,
-                   position: int,
-                   cs: Literal["absolute", "relative"] = "relative",
-                   timeout: float = 10,
-                   change_setpoint_immediately: bool = False,
-        ):
-        """ Move to a specific position. The function will block until the target position is reached or the timeout is reached.
-
-        Parameters
-        ----------
-        position : int
-            The target position in [steps].
-        cs : Literal["absolute", "relative"]
-            The coordinate system in which the position is defined, by default "relative"
-        timeout : float, optional
-            The timeout in seconds, by default 10
-        change_setpoint_immediately : bool, optional
-            If True, the current setpoint can be overwritten by sending a new movement command, by default False
-        """
-        await self.set_control_word_bits({4: False, 5: change_setpoint_immediately, 6: cs == "relative"})
-        
-        await self.set_target_position(position)
-        await self.set_control_word_bit(4, True)
-        
-        target_reached = False
-        timeout = time.time() + timeout
-        while not target_reached:
-            sw = await self.get_status_word()
-            target_reached = sw[1].target_reached
-            if time.time() > timeout:
-                return
-        
-    async def move_async(self,
-                         position: int,
-                         cs: Literal["absolute", "relative"] = "relative",
-                         change_setpoint_immediately: bool = True):
-        """ Move to a specific position asynchronously. The function will return immediately after the movement is started.
-
-        Parameters
-        ----------
-        position : int
-            The target position in [steps].
-        cs : Literal[&quot;absolute&quot;, &quot;relative&quot;], optional
-            The coordinate system in which the position is defined, by default "relative"
-        change_setpoint_immediately : bool, optional
-            If True, the current setpoint can be overwritten by sending a new movement command, by default True
-        """
-        # Check if the drive is moving
-        sw = await self.get_status_word()
-        if sw[1].operation_enabled:
-            cw = await self.get_control_word()
-            if cw[1].change_set_immediately:
-                await self.set_target_position(position)
-                if change_setpoint_immediately == False:
-                    await self.set_control_word_bit(5, False)
-                return
-            
-        else:
-            await self.set_control_word_bits({4: False, 5: change_setpoint_immediately, 6: cs == "relative"})
-        
-        await self.set_target_position(position)        
-        await self.set_control_word_bit(4, True)
-        
-        return
-        
+            logger.error(f"Error disabling operation: {e}")      
         
             
     ### Configuration Registers ###
@@ -172,10 +176,10 @@ class CSD_MT_94:
     ### Identification Registers ###
     async def get_device_info(self) -> dict:
         result = await self.client.read_holding_registers(1152, 9)
-        software_version = self._merge_registers(result.registers[0:2])
-        product_code = self._merge_registers(result.registers[2:4])
-        hardware_version = self._merge_registers(result.registers[4:6])
-        serial_number = self._merge_registers(result.registers[6:8])
+        software_version = merge_registers(result.registers[0:2])
+        product_code = merge_registers(result.registers[2:4])
+        hardware_version = merge_registers(result.registers[4:6])
+        serial_number = merge_registers(result.registers[6:8])
         little_big_endian = result.registers[8]
         
         return {
@@ -205,14 +209,14 @@ class CSD_MT_94:
         return result.registers[0]
     
     async def get_warning_temperature(self) -> int:
-        pass
+        raise NotImplementedError
     async def set_warning_temperature(self, temperature: int):
-        pass
+        raise NotImplementedError
     
     async def get_fault_temperature(self) -> int:
-        pass
+        raise NotImplementedError
     async def set_fault_temperature(self, temperature: int):
-        pass
+        raise NotImplementedError
     
     async def get_drive_alarms(self) -> List[dict]:
         """ 10 events Alarm Register.
@@ -291,7 +295,6 @@ class CSD_MT_94:
     async def get_mode_of_operation(self) -> str:
         """Get the current mode of operation."""
         result = await self.client.read_holding_registers(1002) # I16
-        # Read the register as a signed 16 bit integer
         mode = result.registers[0]
         
         return mode
@@ -299,19 +302,19 @@ class CSD_MT_94:
     async def get_actual_position(self) -> int:
         """Get the current position of the drive."""
         result = await self.client.read_holding_registers(1004, 2)
-        position = self._merge_registers(result.registers)
+        position = merge_registers(result.registers)
         return position
     
     async def get_actual_velocity(self) -> int:
         """Get the current velocity of the drive."""
         result = await self.client.read_holding_registers(1020, 2)
-        velocity = self._merge_registers(result.registers)
+        velocity = merge_registers(result.registers)
         return velocity
     
     async def get_target_position(self) -> int:
         """Get the target position of the drive."""
         result = await self.client.read_holding_registers(1042, 2)
-        position = self._merge_registers(result.registers)
+        position = merge_registers(result.registers)
         return position
     async def set_target_position(self, position: int):
         """Set the target position of the drive."""
@@ -327,7 +330,7 @@ class CSD_MT_94:
     async def get_target_velocity(self) -> int:
         """Get the target velocity in [Hz]."""
         result = await self.client.read_holding_registers(1048, 2)
-        target_velocity = self._merge_registers(result.registers)
+        target_velocity = merge_registers(result.registers)
         return target_velocity
     async def set_target_velocity(self, velocity: int):
         """Set the target velocity of the drive."""
@@ -340,23 +343,84 @@ class CSD_MT_94:
     async def get_profile_velocity(self) -> int:
         """Get the profile velocity in [Hz]."""
         result = await self.client.read_holding_registers(1044, 2)
-        profile_velocity = self._merge_registers(result.registers)
+        profile_velocity = merge_registers(result.registers)
         return profile_velocity
+    async def set_profile_velocity(self, velocity: int):
+        """Set the profile velocity of the drive [0-800000]"""
+        if velocity < 0 or velocity > 800000:
+            raise ValueError("Invalid profile velocity.")
+        try:
+            lsb, msb = int32_to_uint16(velocity)
+            await self.client.write_registers(1044, [lsb, msb])
+        except ModbusException as e:
+            logger.error(f"Error setting profile velocity: {e}")
     
     async def get_profile_acceleration(self) -> int:
         """Get the profile acceleration in [Hz/s]."""
         result = await self.client.read_holding_registers(1046, 2)
-        profile_acceleration = self._merge_registers(result.registers)
+        profile_acceleration = merge_registers(result.registers)
         return profile_acceleration
+    async def set_profile_acceleration(self, acceleration: int):
+        """Set the profile acceleration of the drive [2000-10 000 000]"""
+        if acceleration < 2000 or acceleration > 10000000:
+            raise ValueError("Invalid profile acceleration.")
+        try:
+            lsb, msb = int32_to_uint16(acceleration)
+            await self.client.write_registers(1046, [lsb, msb])
+        except ModbusException as e:
+            logger.error(f"Error setting profile acceleration: {e}")
     
     async def get_profile_deceleration(self) -> int:
         """Get the profile deceleration in [Hz/s]."""
         result = await self.client.read_holding_registers(1072, 2)
-        profile_deceleration = self._merge_registers(result.registers)
+        profile_deceleration = merge_registers(result.registers)
         return profile_deceleration
+    async def set_profile_deceleration(self, deceleration: int):
+        """Set the profile deceleration of the drive [2000-10 000 000]"""
+        if deceleration < 2000 or deceleration > 10000000:
+            raise ValueError("Invalid profile deceleration.")
+        try:
+            lsb, msb = int32_to_uint16(deceleration)
+            await self.client.write_registers(1072, [lsb, msb])
+        except ModbusException as e:
+            logger.error(f"Error setting profile deceleration: {e}")
+    
+    async def get_velocity_window(self) -> int:
+        raise NotImplementedError
+    async def set_velocity_window(self, window: int):
+        raise NotImplementedError
+    async def get_velocity_window_time(self) -> int:
+        raise NotImplementedError
+    async def set_velocity_window_time(self, time: int):
+        raise NotImplementedError
+    async def get_velocity_threshold(self) -> int:
+        raise NotImplementedError
+    async def set_velocity_threshold(self, threshold: int):
+        raise NotImplementedError
+    async def get_velocity_threshold_time(self) -> int:
+        raise NotImplementedError
+    async def set_velocity_threshold_time(self, time: int):
+        raise NotImplementedError
+    
+    
+    
     
     async def set_mode_of_operation(self, mode: MODE_OF_OPERATION):
-        """Set the mode of operation."""
+        """ Set the mode of operation 
+
+        Parameters
+        ----------
+        mode : MODE_OF_OPERATION
+            The desired mode of operation. Options are:
+            - 1: Profile position mode
+            - 3: Profile velocity mode
+            - 6: Homing mode
+
+        Raises
+        ------
+        ValueError
+            If an invalid mode of operation is provided.
+        """
         if mode not in [1, 3, 6]:
             raise ValueError("Invalid mode of operation.")
         
@@ -365,32 +429,25 @@ class CSD_MT_94:
         except ModbusException as e:
             logger.error(f"Error setting mode of operation: {e}")
             
-
-            
-
-            
-    async def set_profile_velocity(self, velocity: int):
-        """Set the profile velocity of the drive [0-800000]"""
-        if velocity < 0 or velocity > 800000:
-            raise ValueError("Invalid profile velocity.")
-        
-        try:
-            await self.client.write_registers(1044, [velocity & 0xFFFF, velocity >> 16])
-        except ModbusException as e:
-            logger.error(f"Error setting profile velocity: {e}")
            
     ### Control Word ###
     async def get_control_word(self) -> Tuple[int, CONTROL_WORD]:
         """Get the control word."""
         result = await self.client.read_holding_registers(1040)
-        bits = self._to_bits(result.registers[0])
+        bits = to_bits_list(result.registers[0])
         
         control = CONTROL_WORD(*bits)
         
         return result.registers[0], control
     
     async def set_control_word(self, control: CONTROL_WORD | int):
-        """Set the control word."""
+        """ Sets the whole control word.
+
+        Parameters
+        ----------
+        control : CONTROL_WORD | int
+            The control provided as a CONTROL_WORD class or as an int.
+        """
         try:
             if isinstance(control, int):
                 await self.client.write_register(1040, control)
@@ -404,7 +461,15 @@ class CSD_MT_94:
             logger.error(f"Error setting control word: {e}")
             
     async def set_control_word_bit(self, bit: int, value: bool):
-        """Set a specific bit in the control word."""
+        """ Set the n-th bit to the value 0 or 1.
+
+        Parameters
+        ----------
+        bit : int
+            The bit index
+        value : bool
+            _description_
+        """
         try:
             control_word = await self.get_control_word()
             control_word = control_word[0]
@@ -527,7 +592,7 @@ class CSD_MT_94:
     async def get_motor_code(self) -> int:
         """Get the motor code."""
         result = await self.client.read_holding_registers(1090, 2)
-        motor_code = self._merge_registers(result.registers)
+        motor_code = merge_registers(result.registers)
         return motor_code
     
     async def set_motor_code(self, code: int):
