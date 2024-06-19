@@ -97,9 +97,91 @@ class CSD_MT_94:
         
         return
    
+    async def halt(self):
+        """ Toggles the halt bit in the control word. Does not permanently stop the drive."""
+        await self.set_control_word_bit(8, True)
+        await self.set_control_word_bit(8, False)
    
+    async def rotate(self,
+                     angle: float,
+                     cs: Literal["absolute", "relative"] = "relative",
+                     units: Literal["deg", "rad"] = "rad",
+                     change_setpoint_immediately: bool = False,
+                     timeout: float = 10,
+                     ):
+        """ Rotate the motor by a specific angle.
+
+        Parameters
+        ----------
+        angle : float
+            The angle in degrees.
+        cs : Literal["absolute", "relative"], optional
+            The coordinate system in which the angle is defined, by default "relative"
+        units : Literal["deg", "rad"], optional
+            The units of the angle, by default "rad"
+        change_setpoint_immediately : bool, optional
+            If True, the current setpoint can be overwritten by sending a new movement command, by default False
+        timeout : float, optional
+            The timeout in seconds, by default 10
+        """
+        if units == "deg":
+            angle = angle * 3.14159 / 180
+            
+        steps_per_revolution = await self.get_step_revolution()
+        if cs == "relative":
+            target_position = angle * steps_per_revolution / (2 * 3.14159)
+            target_position = int(target_position)
+        else:
+            current_position = await self.get_actual_position()
+            target_position = current_position + angle * steps_per_revolution / (2 * 3.14159)
+            target_position = int(target_position)
+            
+        await self.set_control_word_bits({4: False, 5: change_setpoint_immediately, 6: cs == "relative"})
+        await self.set_target_position(target_position)
+        await self.set_control_word_bit(4, True)
+        
+        target_reached = False
+        timeout = time.time() + timeout
+        while not target_reached:
+            sw = await self.get_status_word()
+            target_reached = sw[1].target_reached
+            if time.time() > timeout:
+                return
    
-    
+    async def rotate_async(self,
+                            angle: float,
+                            cs: Literal["absolute", "relative"] = "relative",
+                            units: Literal["deg", "rad"] = "rad",
+                            change_setpoint_immediately: bool = True):
+        """_summary_
+
+        Parameters
+        ----------
+        angle : float
+            The angle in degrees.
+        cs : Literal[&quot;absolute&quot;, &quot;relative&quot;], optional
+            The coordinate system in which the angle is defined, by default "relative"
+        units : Literal[&quot;deg&quot;, &quot;rad&quot;], optional
+            The units of the angle, by default "rad"
+        change_setpoint_immediately : bool, optional
+            If True, the current setpoint can be overwritten by sending a new movement command, by default True
+        """
+        if units == "deg":
+            angle = angle * 3.14159 / 180
+        
+        steps_per_revolution = await self.get_step_revolution()
+        if cs == "relative":
+            target_position = angle * steps_per_revolution / (2 * 3.14159)
+            target_position = int(target_position)
+        else:
+            current_position = await self.get_actual_position()
+            target_position = current_position + angle * steps_per_revolution / (2 * 3.14159)
+            target_position = int(target_position)
+            
+        await self.set_control_word_bits({4: False, 5: change_setpoint_immediately, 6: cs == "relative"})
+        await self.set_target_position(target_position)
+        await self.set_control_word_bit(4, True)
+            
     async def switch_on(self):
         """Switch on the drive."""
         try:
