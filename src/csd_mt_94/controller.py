@@ -153,7 +153,8 @@ class CSD_MT_94:
                             cs: Literal["absolute", "relative"] = "relative",
                             units: Literal["deg", "rad"] = "rad",
                             change_setpoint_immediately: bool = True):
-        """_summary_
+        """ Rotate the motor by a specific angle asynchronously.
+        The function will return immediately after the movement is started.
 
         Parameters
         ----------
