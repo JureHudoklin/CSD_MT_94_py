@@ -21,11 +21,11 @@ class CSD_MT_94:
     def __init__(self, host, port):
         self.host = host
         self.port = port
-        self.client = AsyncModbusTcpClient(
-            host,
-            port=port,
-            framer=Framer.SOCKET,
-        )
+        # self.client = AsyncModbusTcpClient(
+        #     host,
+        #     port=port,
+        #     framer=Framer.SOCKET,
+        # )
         self.client_sync = ModbusTcpClient(
             host,
             port=port,
@@ -37,7 +37,8 @@ class CSD_MT_94:
         self.client_sync.connect()
         
     def __del__(self):
-        self.switch_off_sync()
+        print("Deleting")
+        self.switch_off()
         self.client.close()
         self.client_sync.close()
     
@@ -247,12 +248,23 @@ class CSD_MT_94:
             await self.set_control_word_bit_async(1, True)
         except ModbusException as e:
             logger.error(f"Error enabling voltage: {e}")
-            
+    def enable_voltage(self):
+        """Enable the voltage."""
+        try:
+            self.set_control_word_bit(1, True)
+        except ModbusException as e:
+            logger.error(f"Error enabling voltage: {e}")
             
     async def disable_voltage_async(self):
         """Disable the voltage."""
         try:
             await self.set_control_word_bit_async(1, False)
+        except ModbusException as e:
+            logger.error(f"Error disabling voltage: {e}")
+    def disable_voltage(self):
+        """Disable the voltage."""
+        try:
+            self.set_control_word_bit(1, False)
         except ModbusException as e:
             logger.error(f"Error disabling voltage: {e}")
             
@@ -263,11 +275,23 @@ class CSD_MT_94:
             await self.set_control_word_bit_async(2, True)
         except ModbusException as e:
             logger.error(f"Error quick stopping drive: {e}")
+    def quick_stop(self):
+        """Quick stop the drive."""
+        try:
+            self.set_control_word_bit(2, True)
+        except ModbusException as e:
+            logger.error(f"Error quick stopping drive: {e}")
             
     async def release_quick_stop_async(self):
         """Release the quick stop."""
         try:
             await self.set_control_word_bit_async(2, False)
+        except ModbusException as e:
+            logger.error(f"Error releasing quick stop: {e}")
+    def release_quick_stop(self):
+        """Release the quick stop."""
+        try:
+            self.set_control_word_bit(2, False)
         except ModbusException as e:
             logger.error(f"Error releasing quick stop: {e}")
     
@@ -277,11 +301,23 @@ class CSD_MT_94:
             await self.set_control_word_bit_async(3, True)
         except ModbusException as e:
             logger.error(f"Error enabling operation: {e}")
+    def enable_operation(self):
+        """Enable operation."""
+        try:
+            self.set_control_word_bit(3, True)
+        except ModbusException as e:
+            logger.error(f"Error enabling operation: {e}")
             
     async def disable_operation_async(self):
         """Disable operation."""
         try:
             await self.set_control_word_bit_async(3, False)
+        except ModbusException as e:
+            logger.error(f"Error disabling operation: {e}")
+    def disable_operation_async(self):
+        """Disable operation."""
+        try:
+            self.set_control_word_bit(3, False)
         except ModbusException as e:
             logger.error(f"Error disabling operation: {e}")      
         
