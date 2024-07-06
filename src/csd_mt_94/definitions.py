@@ -66,21 +66,21 @@ class CONTROL_WORD:
     switch_on: bool
 
     def to_bits(self):
-        return [
-            self.user_specific_15,
-            self.user_specific_14,
-            self.user_specific_13,
-            self.user_specific_12,
-            self.user_specific_11,
-            self.reserved_10,
-            self.reserved_9,
-            self.halt,
-            self.fault_reset,
-            self.relative_cs,
-            self.change_set_immediately,
-            self.new_set_point,
-            self.enable_op,
-            self.quick_stop,
-            self.enable_voltage,
-            self.switch_on,
-        ]
+        return {
+            0: self.switch_on,
+            1: self.enable_voltage,
+            2: self.quick_stop,
+            3: self.enable_op,
+            4: self.new_set_point,
+            5: self.change_set_immediately,
+            6: self.relative_cs,
+            7: self.fault_reset,
+            8: self.halt,
+            9: self.reserved_9,
+            10: self.reserved_10,
+            11: self.user_specific_11,
+            12: self.user_specific_12,
+            13: self.user_specific_13,
+            14: self.user_specific_14,
+            15: self.user_specific_15,
+        }
