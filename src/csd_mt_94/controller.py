@@ -1,19 +1,23 @@
-from typing import Any, Dict, List, Tuple, Literal, Union
+from typing import Any, Dict, List, Tuple, Literal, Union, cast
+import time
+import threading
+import queue
+import types
 import time
 
-from pymodbus.client import AsyncModbusTcpClient
 from pymodbus.client import ModbusTcpClient
 from pymodbus.payload import BinaryPayloadDecoder, BinaryPayloadBuilder
 from pymodbus.constants import Endian
+from pymodbus.framer import FramerType
 from pymodbus import (
     ExceptionResponse,
-    Framer,
     ModbusException,
     pymodbus_apply_logging_config,
 )
 import asyncio
 import logging
 from .utils import merge_registers, to_bits_list, int32_to_uint16, encode_bits_to_payload, decode_payload_to_bits
+from .thread_safe_wrapper import ThreadSafeClientWrapper
 from .definitions import *
 
 logger = logging.getLogger(__name__)
@@ -22,31 +26,32 @@ class CSD_MT_94:
     def __init__(self, host, port):
         self.host = host
         self.port = port
-        self.client = ModbusTcpClient(
+        self._client = ModbusTcpClient(
             host,
             port=port,
-            framer=Framer.SOCKET,
-        )    
- 
-    def start_connection(self):
-        self.client.connect()
+            framer=FramerType.SOCKET,
+        )
+        self._client = cast(ModbusTcpClient, ThreadSafeClientWrapper(self._client))
+        
+    def connect(self):
+        self._client.connect()
         
     def __del__(self):
+        self._client.stop()
         self.switch_off()
-        self.client.close()
+        self._client.close()
         
     def __enter__(self):
-        self.start_connection()
+        self.connect()
         return self
     
     def __exit__(self, exc_type, exc_value, traceback):
         self.switch_off()
-        self.client.close()
-    
-    
+        self._client.close()
+     
     def is_connected(self) -> bool:
         """Check if the client is connected."""
-        return self.client.is_socket_open()
+        return self._client.is_socket_open()
    
     def move(self,
             position: int,
@@ -167,7 +172,7 @@ class CSD_MT_94:
     def switch_off(self) -> bool:
         """Switch off the drive."""
         try:
-            success = self.client.write_register(1040, 0)
+            success = self._client.write_register(1040, 0)
             if success:
                 return True
             else:
@@ -177,7 +182,6 @@ class CSD_MT_94:
             logger.error(f"Error switching off drive: {e}")
             return False
             
-
     def enable_voltage(self) -> bool:
         """Enable the voltage."""
         try:
@@ -246,7 +250,7 @@ class CSD_MT_94:
     ### Configuration Registers ###
     def get_ip_address(self) -> str | None:
         try:
-            result = self.client.read_holding_registers(1130, 4)
+            result = self._client.read_holding_registers(1130, 4)
         except ModbusException as e:
             logger.error(f"Error getting IP address: {e}")
             return None
@@ -261,7 +265,7 @@ class CSD_MT_94:
     
     def get_netmask_async(self) -> str | None:
         try:
-            result = self.client.read_holding_registers(1134, 4)
+            result = self._client.read_holding_registers(1134, 4)
         except ModbusException as e:
             logger.error(f"Error getting netmask: {e}")
             return None
@@ -276,7 +280,7 @@ class CSD_MT_94:
     
     def get_gateway_async(self) -> str | None:
         try:
-            result = self.client.read_holding_registers(1138, 4)
+            result = self._client.read_holding_registers(1138, 4)
         except ModbusException as e:
             logger.error(f"Error getting gateway: {e}")
             return None
@@ -293,7 +297,7 @@ class CSD_MT_94:
     ### Identification Registers ###
     def get_device_info(self) -> Dict[str, Union[str, int]] | None:
         try:
-            result = self.client.read_holding_registers(1152, 9)
+            result = self._client.read_holding_registers(1152, 9)
         except ModbusException as e:
             logger.error(f"Error getting device info: {e}")
             return None
@@ -316,7 +320,7 @@ class CSD_MT_94:
     def is_error(self) -> bool | None:
         """Check if the drive is in an error state."""
         try:
-            result = self.client.read_holding_registers(1006) #U16
+            result = self._client.read_holding_registers(1006) #U16
         except ModbusException as e:
             logger.error(f"Error checking if drive is in error state: {e}")
             return None
@@ -327,7 +331,7 @@ class CSD_MT_94:
     
     def get_error_code(self) -> Dict[Literal["error_code", "error_message"], Union[str, int]] | None:
         try:
-            result = self.client.read_holding_registers(1007) #U16
+            result = self._client.read_holding_registers(1007) #U16
         except ModbusException as e:
             logger.error(f"Error getting error code: {e}")
             return None
@@ -341,7 +345,7 @@ class CSD_MT_94:
     def get_drive_temperature(self) -> int | None:
         """Get the drive temperature in degrees Celsius."""
         try:
-            result = self.client.read_holding_registers(1124, 1) #U16
+            result = self._client.read_holding_registers(1124, 1) #U16
         except ModbusException as e:
             logger.error(f"Error getting drive temperature: {e}")
             return None
@@ -373,7 +377,7 @@ class CSD_MT_94:
             List of dictionaries containing the "alarm_time" and "alarm_code".
         """
         try:
-            result = self.client.read_holding_registers(1220, 20)
+            result = self._client.read_holding_registers(1220, 20)
         except ModbusException as e:
             logger.error(f"Error getting drive alarms: {e}")
             return None
@@ -391,8 +395,8 @@ class CSD_MT_94:
     def reset_error_logs(self) -> bool:
         """ Reset the drive alarm registers."""
         try:
-            self.client.write_register(1240, 1)
-            self.client.write_register(1240, 0)
+            self._client.write_register(1240, 1)
+            self._client.write_register(1240, 0)
             return True
         except ModbusException as e:
             logger.error(f"Error resetting error logs: {e}")
@@ -413,9 +417,9 @@ class CSD_MT_94:
         """
         try:
             if store_parameters:
-                self.client.write_register(1260, 0x6173)
+                self._client.write_register(1260, 0x6173)
             if store_ip_mask_gateway:
-                self.client.write_register(1260, 0x1111)
+                self._client.write_register(1260, 0x1111)
             time.sleep(5)
             logger.info("Parameters saved.")
             return True
@@ -427,7 +431,7 @@ class CSD_MT_94:
     def restore_default_parameters(self) -> bool:
         """Restore the default parameters."""
         try:
-            self.client.write_register(1261, 0x6F6C)
+            self._client.write_register(1261, 0x6F6C)
             time.sleep(5)
             logger.info("Parameters Restored to default values.")
             return True
@@ -441,7 +445,7 @@ class CSD_MT_94:
     def get_status_word(self) -> Tuple[int, STATUS_WORD] | None:
         """Get the status word."""
         try:
-            result = self.client.read_holding_registers(1001)
+            result = self._client.read_holding_registers(1001)
         except ModbusException as e:
             logger.error(f"Error getting status word: {e}")
             return None
@@ -458,7 +462,7 @@ class CSD_MT_94:
     def get_mode_of_operation(self) -> MODE_OF_OPERATION | None:
         """Get the current mode of operation."""
         try:
-            result = self.client.read_holding_registers(1002) # I16
+            result = self._client.read_holding_registers(1002) # I16
         except ModbusException as e:
             logger.error(f"Error getting mode of operation: {e}")
             return None
@@ -470,7 +474,7 @@ class CSD_MT_94:
     def get_actual_position(self) -> int | None:
         """Get the current position of the drive."""
         try:
-            result = self.client.read_holding_registers(1004, 2)
+            result = self._client.read_holding_registers(1004, 2)
         except ModbusException as e:
             logger.error(f"Error getting actual position: {e}")
             return None
@@ -482,7 +486,7 @@ class CSD_MT_94:
     def get_actual_velocity(self) -> int | None:
         """Get the current velocity of the drive."""
         try:
-            result = self.client.read_holding_registers(1020, 2)
+            result = self._client.read_holding_registers(1020, 2)
         except ModbusException as e:
             logger.error(f"Error getting actual velocity: {e}")
             return None
@@ -494,7 +498,7 @@ class CSD_MT_94:
     def get_target_position(self) -> int | None:
         """Get the target position of the drive."""
         try:
-            result = self.client.read_holding_registers(1042, 2)
+            result = self._client.read_holding_registers(1042, 2)
         except ModbusException as e:
             logger.error(f"Error getting target position: {e}")
             return None
@@ -514,7 +518,7 @@ class CSD_MT_94:
         payload.add_32bit_int(position)
         
         try:
-            self.client.write_registers(1042, payload.to_registers())
+            self._client.write_registers(1042, payload.to_registers())
             return True
         except ModbusException as e:
             logger.error(f"Error setting target position: {e}")
@@ -523,7 +527,7 @@ class CSD_MT_94:
     def get_target_velocity(self) -> int | None:
         """Get the target velocity in [Hz]."""
         try:
-            result = self.client.read_holding_registers(1048, 2)
+            result = self._client.read_holding_registers(1048, 2)
         except ModbusException as e:
             logger.error(f"Error getting target velocity: {e}")
             return None
@@ -540,7 +544,7 @@ class CSD_MT_94:
         try:
             payload = BinaryPayloadBuilder(byteorder=Endian.BIG, wordorder=Endian.LITTLE)
             payload.add_32bit_int(velocity)
-            self.client.write_registers(1048, payload.to_registers())
+            self._client.write_registers(1048, payload.to_registers())
             return True
 
         except ModbusException as e:
@@ -550,7 +554,7 @@ class CSD_MT_94:
     def get_profile_velocity(self) -> int | None:
         """Get the profile velocity in [Hz]."""
         try:
-            result = self.client.read_holding_registers(1044, 2)
+            result = self._client.read_holding_registers(1044, 2)
         except ModbusException as e:
             logger.error(f"Error getting profile velocity: {e}")
             return None
@@ -565,7 +569,7 @@ class CSD_MT_94:
         try:
             payload = BinaryPayloadBuilder(byteorder=Endian.BIG, wordorder=Endian.LITTLE)
             payload.add_32bit_int(velocity)
-            self.client.write_registers(1044, payload.to_registers())
+            self._client.write_registers(1044, payload.to_registers())
             return True
         except ModbusException as e:
             logger.error(f"Error setting profile velocity: {e}")
@@ -574,7 +578,7 @@ class CSD_MT_94:
     def get_profile_acceleration(self) -> int | None:
         """Get the profile acceleration in [Hz/s]."""
         try:
-            result = self.client.read_holding_registers(1046, 2)
+            result = self._client.read_holding_registers(1046, 2)
         except ModbusException as e:
             logger.error(f"Error getting profile acceleration: {e}")
             return None
@@ -591,7 +595,7 @@ class CSD_MT_94:
         try:
             payload = BinaryPayloadBuilder(byteorder=Endian.BIG, wordorder=Endian.LITTLE)
             payload.add_32bit_int(acceleration)
-            self.client.write_registers(1046, payload.to_registers())
+            self._client.write_registers(1046, payload.to_registers())
             return True
         except ModbusException as e:
             logger.error(f"Error setting profile acceleration: {e}")
@@ -600,7 +604,7 @@ class CSD_MT_94:
     def get_profile_deceleration(self) -> int | None:
         """Get the profile deceleration in [Hz/s]."""
         try:
-            result = self.client.read_holding_registers(1072, 2)
+            result = self._client.read_holding_registers(1072, 2)
         except ModbusException as e:
             logger.error(f"Error getting profile deceleration: {e}")
             return None
@@ -617,7 +621,7 @@ class CSD_MT_94:
         try:
             payload = BinaryPayloadBuilder(byteorder=Endian.BIG, wordorder=Endian.LITTLE)
             payload.add_32bit_int(deceleration)
-            self.client.write_registers(1072, payload.to_registers())
+            self._client.write_registers(1072, payload.to_registers())
             return True
             
         except ModbusException as e:
@@ -663,7 +667,7 @@ class CSD_MT_94:
         try:
             payload = BinaryPayloadBuilder(byteorder=Endian.BIG, wordorder=Endian.LITTLE)
             payload.add_16bit_int(mode)
-            self.client.write_register(1041, payload.to_registers()[0])
+            self._client.write_register(1041, payload.to_registers()[0])
             return True
         except ModbusException as e:
             logger.error(f"Error setting mode of operation: {e}")
@@ -674,7 +678,7 @@ class CSD_MT_94:
     def get_control_word(self) -> None | Tuple[int, CONTROL_WORD]:
         """Get the control word."""
         try:
-            result = self.client.read_holding_registers(1040)
+            result = self._client.read_holding_registers(1040)
         except ModbusException as e:
             logger.error(f"Error getting control word: {e}")
             return None
@@ -702,14 +706,14 @@ class CSD_MT_94:
                 payload = BinaryPayloadBuilder(byteorder=Endian.BIG, wordorder=Endian.LITTLE)
                 payload.add_16bit_uint(control)
                 
-                self.client.write_register(1040, payload.to_registers()[0])
+                self._client.write_register(1040, payload.to_registers()[0])
                 
             elif isinstance(control, BinaryPayloadBuilder):
-                self.client.write_register(1040, control.to_registers()[0])
+                self._client.write_register(1040, control.to_registers()[0])
                 
             else:
                 payload = encode_bits_to_payload(control.to_bits(), "uint16", byteorder=Endian.BIG, wordorder=Endian.LITTLE)
-                self.client.write_register(1040, payload.to_registers()[0])
+                self._client.write_register(1040, payload.to_registers()[0])
             return True
                 
         except ModbusException as e:
@@ -769,7 +773,7 @@ class CSD_MT_94:
     def get_current_ratio(self) -> int | None:
         """Get the current ratio in [0 - 120 %]."""
         try:
-            result = self.client.read_holding_registers(1080)
+            result = self._client.read_holding_registers(1080)
         except ModbusException as e:
             logger.error(f"Error getting current ratio: {e}")
             return None
@@ -789,7 +793,7 @@ class CSD_MT_94:
         try:
             payload = BinaryPayloadBuilder(byteorder=Endian.BIG, wordorder=Endian.LITTLE)
             payload.add_8bit_uint(ratio)
-            self.client.write_register(1080, payload.to_registers()[0])
+            self._client.write_register(1080, payload.to_registers()[0])
             return True
         except ModbusException as e:
             logger.error(f"Error setting current ratio: {e}")
@@ -798,7 +802,10 @@ class CSD_MT_94:
     def get_step_revolution(self) -> int | None:
         """Get the steps per revolution in [12800 - 12800]."""
         try:
-            result = self.client.read_holding_registers(1081)
+            result = self._client.read_holding_registers(1081)
+            if result.isError():
+                logger.error(f"Error getting step revolution: {result}")
+                return None
             step_revolution = BinaryPayloadDecoder.fromRegisters(result.registers, byteorder=Endian.BIG, wordorder=Endian.LITTLE).decode_16bit_uint()
             return step_revolution
             
@@ -809,7 +816,7 @@ class CSD_MT_94:
     def get_current_reduction(self) -> int | None:
         """Get the current reduction in [1]."""
         try:
-            result = self.client.read_holding_registers(1083)
+            result = self._client.read_holding_registers(1083)
             reduction = BinaryPayloadDecoder.fromRegisters(result.registers, byteorder=Endian.BIG, wordorder=Endian.LITTLE).decode_8bit_uint()
             return reduction
         except ModbusException as e:
@@ -821,7 +828,7 @@ class CSD_MT_94:
         { 0: 0.9, 1: 1.8, 2: 3.6, 3: 5.4, 4: 7.2, 5: 9}
         """
         try:
-            result = self.client.read_holding_registers(1084)
+            result = self._client.read_holding_registers(1084)
             encoder_window = BinaryPayloadDecoder.fromRegisters(result.registers, byteorder=Endian.BIG, wordorder=Endian.LITTLE).decode_8bit_uint()
             return encoder_window
         except ModbusException as e:
@@ -841,7 +848,7 @@ class CSD_MT_94:
         try:
             payload = BinaryPayloadBuilder(byteorder=Endian.BIG, wordorder=Endian.LITTLE)
             payload.add_8bit_uint(window)
-            self.client.write_register(1084, payload.to_registers()[0])
+            self._client.write_register(1084, payload.to_registers()[0])
             return True
         except ModbusException as e:
             logger.error(f"Error setting encoder window: {e}")
@@ -859,7 +866,7 @@ class CSD_MT_94:
         registers 1090-1091.
         """
         try:
-            result = self.client.read_holding_registers(1085)
+            result = self._client.read_holding_registers(1085)
             error_reaction_code = BinaryPayloadDecoder.fromRegisters(result.registers, byteorder=Endian.BIG, wordorder=Endian.LITTLE).decode_8bit_uint()
             return error_reaction_code
         except ModbusException as e:
@@ -881,7 +888,7 @@ class CSD_MT_94:
             raise ValueError("Invalid following error reaction code.")
         
         try:
-            self.client.write_register(1085, code)
+            self._client.write_register(1085, code)
             return True
             
         except ModbusException as e:
@@ -894,7 +901,7 @@ class CSD_MT_94:
             payload = BinaryPayloadBuilder(byteorder=Endian.BIG, wordorder=Endian.LITTLE)
             payload.add_8bit_uint(1)
             
-            self.client.write_register(1086, payload.to_registers()[0])
+            self._client.write_register(1086, payload.to_registers()[0])
             return True
         except ModbusException as e:
             logger.error(f"Error resetting position error: {e}")
@@ -908,7 +915,7 @@ class CSD_MT_94:
         try:
             payload = BinaryPayloadBuilder(byteorder=Endian.BIG, wordorder=Endian.LITTLE)
             payload.add_8bit_uint(code)
-            self.client.write_register(1087, payload.to_registers()[0])
+            self._client.write_register(1087, payload.to_registers()[0])
             return True
         except ModbusException as e:
             logger.error(f"Error setting output: {e}")
@@ -917,7 +924,7 @@ class CSD_MT_94:
     def get_motor_code(self) -> int | None:
         """Get the motor code."""
         try:
-            result = self.client.read_holding_registers(1090, 2)
+            result = self._client.read_holding_registers(1090, 2)
             motor_code = BinaryPayloadDecoder.fromRegisters(result.registers, byteorder=Endian.BIG, wordorder=Endian.LITTLE).decode_32bit_uint()
             return motor_code
         except ModbusException as e:
@@ -930,7 +937,7 @@ class CSD_MT_94:
             payload = BinaryPayloadBuilder(byteorder=Endian.BIG, wordorder=Endian.LITTLE)
             payload.add_32bit_uint(code)
             
-            self.client.write_registers(1090, payload.to_registers())
+            self._client.write_registers(1090, payload.to_registers())
             return True
         
         except ModbusException as e:
@@ -940,7 +947,7 @@ class CSD_MT_94:
     def get_revolution_direction(self) -> int | None:
         """Get the revolution direction."""
         try:
-            result = self.client.read_holding_registers(1092)
+            result = self._client.read_holding_registers(1092)
             direction = BinaryPayloadDecoder.fromRegisters(result.registers, byteorder=Endian.BIG, wordorder=Endian.LITTLE).decode_8bit_uint()
             return direction
         except ModbusException as e:
@@ -957,7 +964,7 @@ class CSD_MT_94:
         try:
             payload = BinaryPayloadBuilder(byteorder=Endian.BIG, wordorder=Endian.LITTLE)
             payload.add_8bit_uint(direction)
-            self.client.write_register(1092, payload.to_registers()[0])
+            self._client.write_register(1092, payload.to_registers()[0])
             return True
         except ModbusException as e:
             logger.error(f"Error setting revolution direction: {e}")
@@ -966,7 +973,7 @@ class CSD_MT_94:
     def get_current_reduction_ratio(self) -> int | None:
         """Get the current reduction ratio in [1 - 100 %]."""
         try:
-            result = self.client.read_holding_registers(1112)
+            result = self._client.read_holding_registers(1112)
             reduction_ratio = BinaryPayloadDecoder.fromRegisters(result.registers, byteorder=Endian.BIG, wordorder=Endian.LITTLE).decode_16bit_uint()
             return reduction_ratio
         except ModbusException as e:
@@ -981,7 +988,7 @@ class CSD_MT_94:
         try:
             payload = BinaryPayloadBuilder(byteorder=Endian.BIG, wordorder=Endian.LITTLE)
             payload.add_16bit_uint(ratio)
-            self.client.write_register(1112, payload.to_registers()[0])
+            self._client.write_register(1112, payload.to_registers()[0])
             return True
         except ModbusException as e:
             logger.error(f"Error setting current reduction ratio: {e}")
@@ -989,27 +996,27 @@ class CSD_MT_94:
     
     def get_motor_current_limit(self) -> int:
         """Get the motor current limit in [1 - 4 A]."""
-        result = self.client.read_holding_registers(1117)
+        result = self._client.read_holding_registers(1117)
         return result.registers[0]
     
     def get_motor_proportional_gain(self) -> int:
         """Get the motor proportional gain [100 - 400 %]."""
-        result = self.client.read_holding_registers(1118)
+        result = self._client.read_holding_registers(1118)
         return result.registers[0]
     
     def get_motor_dynamic_balancing(self) -> int:
         """Get the motor dynamic balancing [0 - 500 %]."""
-        result = self.client.read_holding_registers(1119)
+        result = self._client.read_holding_registers(1119)
         return result.registers[0]
     
     def get_motor_current_recycling_enable(self) -> bool:
         """Get the motor current recycling enable."""
-        result = self.client.read_holding_registers(1120)
+        result = self._client.read_holding_registers(1120)
         return bool(result.registers[0])
     
     def get_encoder_count_per_revolution(self) -> int:
         """Get the encoder count per revolution. [400-4000]"""
-        result = self.client.read_holding_registers(1121)
+        result = self._client.read_holding_registers(1121)
         return result.registers[0]
     
     def set_encoder_count_per_revolution(self, count: int):
@@ -1018,7 +1025,7 @@ class CSD_MT_94:
             raise ValueError("Invalid encoder count per revolution.")
         
         try:
-            self.client.write_register(1121, count)
+            self._client.write_register(1121, count)
         except ModbusException as e:
             logger.error(f"Error setting encoder count per revolution: {e}")       
             
